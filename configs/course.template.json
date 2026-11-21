@@ -1,0 +1,26 @@
+{
+  "description": "SURVEY TEMPLATE, NOT A DRIVEABLE MAP. PDF nominal dimensions are not calibrated map coordinates. Units m/rad; rear axle frame.",
+  "surveyed": false,
+  "lidar_map": "calibration/local/lidar_map.npy",
+  "minimum_lap_travel_m": 25.0,
+  "road_polygon": null,
+  "road_starts": {"M3": null},
+  "lane_paths": {"1": [], "2": []},
+  "lap_gate": null,
+  "stop_zone": {"inner_polygon": null, "target_pose": null},
+  "parking": {
+    "area_polygon": null,
+    "starts": {"1": null, "2": null, "3": null, "4": null},
+    "out_line": null,
+    "out_goal": null,
+    "parallel_entry_lines": [],
+    "perpendicular": {
+      "1": {"inner_polygon": null, "outer_polygon": null, "goal": null, "approach": null, "painted_edges": []},
+      "2": {"inner_polygon": null, "outer_polygon": null, "goal": null, "approach": null, "painted_edges": []}
+    },
+    "parallel": {
+      "1": {"inner_polygon": null, "outer_polygon": null, "goal": null, "approach": null, "painted_edges": []},
+      "2": {"inner_polygon": null, "outer_polygon": null, "goal": null, "approach": null, "painted_edges": []}
+    }
+  }
+}

@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.env.local
+/2026년 2학기 자율주행캡스톤디자인 평가 규정집.pdf
+.pytest_cache/
+.venv/
+*.egg-info/
+tmp/
+data/
+models/
+logs/
+calibration/local/
+configs/local*.json

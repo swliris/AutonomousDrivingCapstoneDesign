@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "second-autonomy"
+version = "0.1.0"
+description = "Two-camera and 2D LiDAR Ackermann vehicle competition software"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24,<3", "scipy>=1.10,<2", "opencv-python>=4.8,<5", "pyserial>=3.5,<4", "rplidar-roboticia>=0.9.5,<1"]
+
+[project.optional-dependencies]
+learn = ["torch>=2.2", "torchvision>=0.17", "segmentation-models-pytorch>=0.3.3,<1", "onnx>=1.15", "onnxruntime>=1.17"]
+signal = ["ultralytics>=8.3,<9"]
+test = ["pytest>=7"]
+
+[project.scripts]
+second = "second.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["second*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

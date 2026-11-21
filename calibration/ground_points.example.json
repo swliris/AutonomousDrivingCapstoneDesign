@@ -1,0 +1,5 @@
+{
+  "description": "Replace every example pair with measurements on an UNDISTORTED image at the final fixed camera resolution. Never use this sample for driving.",
+  "undistorted_image_px": [[150, 650], [1100, 650], [400, 450], [850, 450], [500, 350], [750, 350]],
+  "rear_axle_xy_m": [[0.4, 0.7], [0.4, -0.7], [1.2, 0.7], [1.2, -0.7], [2.4, 0.7], [2.4, -0.7]]
+}

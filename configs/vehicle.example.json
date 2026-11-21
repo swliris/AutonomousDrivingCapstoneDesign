@@ -1,0 +1,39 @@
+{
+  "description": "EXAMPLE ONLY. Measure actual vehicle; calibration flags must stay false until verified.",
+  "calibrated": false,
+  "firmware_verified": false,
+  "height_m": 0.65,
+  "vehicle": {
+    "wheelbase": 0.50, "width": 0.48, "front": 0.70, "rear": 0.25,
+    "track": 0.40, "tire_length": 0.09, "tire_width": 0.05,
+    "max_steer": 0.45, "margin": 0.06
+  },
+  "serial": {"port": "/dev/serial/by-id/REPLACE_ARDUINO", "protocol": "v2", "baud": 115200, "boot_wait_s": 2.0},
+  "cameras": {
+    "front": {"device": "/dev/v4l/by-id/REPLACE_FRONT", "width": 1280, "height": 720, "fps": 20, "intrinsics": null, "distortion": null, "ground_homography": null},
+    "rear": {"device": "/dev/v4l/by-id/REPLACE_REAR", "width": 1280, "height": 720, "fps": 20, "intrinsics": null, "distortion": null, "ground_homography": null}
+  },
+  "lidar": {"port": "/dev/serial/by-id/REPLACE_LIDAR", "baud": 115200, "angle_sign": -1, "pose": [0.0, 0.0, 0.0], "min_range_m": 0.10, "max_range_m": 8.0},
+  "calibration": {
+    "speed_to_pwm": [[-0.40, -170], [-0.20, -130], [0.0, 0], [0.20, 130], [0.40, 170]],
+    "steer_to_command": [[-0.45, 100], [0.0, 0], [0.45, -100]],
+    "pot_to_steer": [[433, -0.45], [483, 0.0], [533, 0.45]]
+  },
+  "perception": {
+    "segmentation_onnx": null,
+    "model_size": [640, 384],
+    "lane_width_m": 0.85,
+    "white_threshold": {"min_value": 160, "max_saturation": 80},
+    "signal": {"model": null, "confidence": 0.60, "roi": null, "roi_verified": false}
+  },
+  "control": {
+    "road_speed_mps": 0.35, "change_speed_mps": 0.22, "parking_speed_mps": 0.18,
+    "deceleration_mps2": 0.35, "latency_budget_s": 0.15,
+    "green_confirm_s": 0.30, "planner_timeout_s": 2.0
+  },
+  "safety": {
+    "camera_max_age_s": 0.25, "lidar_max_age_s": 0.35, "pose_max_age_s": 0.25,
+    "feedback_max_age_s": 0.20, "command_max_age_s": 0.15,
+    "icp_max_rmse_m": 0.035
+  }
+}
