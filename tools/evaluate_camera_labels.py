@@ -1,6 +1,7 @@
 """Offline A/B measurement on the matched 640x480 recording and reviewed signal crops.
 
 The fixed projection approximates perspective on the straight part of this recording.
+With --relative, each frame is evaluated independently without a map or annotation input.
 It is evaluation-only. The polygon at row 420 substitutes for lane-ID association
 with a surveyed map. No polygon pixels are used to find or fit paint tracks.
 Score separate image rows. Flag clipped polygons and out-of-view predictions.
@@ -35,7 +36,7 @@ def save_csv(path, rows):
         writer.writerows(rows)
 
 
-def evaluate_lanes(vision, image_dir, labels):
+def evaluate_lanes(vision, image_dir, labels, relative=False):
     coco = json.loads(labels.read_text())
     lane_id = next(c['id'] for c in coco['categories'] if c['name'] == 'lane2')
     polygons = defaultdict(list)
@@ -53,7 +54,7 @@ def evaluate_lanes(vision, image_dir, labels):
         anchor = np.flatnonzero(region[ANCHOR])
         paths = {}
         single_span = anchor.size > 0 and np.all(np.diff(anchor) == 1)
-        if single_span and not (anchor[0] <= BORDER_PX and anchor[-1] >= 639-BORDER_PX):
+        if not relative and single_span and not (anchor[0] <= BORDER_PX and anchor[-1] >= 639-BORDER_PX):
             # A clipped edge cannot determine the center. Estimate from the
             # visible opposite edge and the fixed reference width at the anchor.
             half = 1.5 * (ANCHOR - 100) / 2
@@ -63,7 +64,7 @@ def evaluate_lanes(vision, image_dir, labels):
             elif anchor[-1] >= 639-BORDER_PX:
                 center = anchor[0] + half
             paths = {'2': [[.8, (320 - center) * SCALE / (ANCHOR - 100)]]}
-        lanes, _, _ = vision.lanes(image, Pose(), {'lane_paths': paths})
+        lanes, _, _ = vision.lanes(image, Pose(), None if relative else {'lane_paths': paths})
         path = lanes.get(2, [])
         for v in ROWS:
             pixels = np.flatnonzero(region[v])
@@ -82,7 +83,7 @@ def evaluate_lanes(vision, image_dir, labels):
                 visibility = 'clipped'
             else:
                 visibility = 'full'
-            if not paths:
+            if not relative and not paths:
                 state = 'no_reference'
             elif visibility in ('absent', 'multiple_spans'):
                 state = 'no_single_span'
@@ -117,6 +118,7 @@ def main():
     parser.add_argument('--labels', required=True, type=Path)
     parser.add_argument('--signal-images', required=True, type=Path)
     parser.add_argument('--reviewed-signals', required=True, type=Path)
+    parser.add_argument('--relative', action='store_true', help='image-only lane association, one cold start per frame')
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     cfg = load_json(ROOT / 'configs/vehicle.example.json')
@@ -125,7 +127,7 @@ def main():
     cfg['perception']['signal'].update(roi=[0., 0., 1., 1.], roi_verified=True)
     vision = Vision(cfg)
     args.output.mkdir(parents=True, exist_ok=True)
-    save_csv(args.output / 'lanes.csv', evaluate_lanes(vision, args.images, args.labels))
+    save_csv(args.output / 'lanes.csv', evaluate_lanes(vision, args.images, args.labels, args.relative))
     save_csv(args.output / 'signals.csv', evaluate_signals(vision, args.signal_images, args.reviewed_signals))
 
 

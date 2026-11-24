@@ -116,6 +116,34 @@ def _lane_candidates(xs, tracks, lane_width, *, visible_section=False):
     return candidates
 
 
+def _lane_from_dashes(curve, xs, ys, paint, width):
+    x, y = curve
+    slope = np.gradient(y, x)
+    near = (xs >= max(.35, x[0])) & (xs <= min(2.7, x[-1]))
+    if np.count_nonzero(near) < 9:
+        return None
+    centers = np.interp(xs[near], x, y)
+    offset = width*.5*np.hypot(1.,np.interp(xs[near], x, slope))
+    rows = paint[near]
+    def dashed(side):
+        yy = centers+side*offset
+        idx = np.rint((yy-ys[0])/(ys[1]-ys[0])).astype(int)
+        cols = idx[:, None]+np.arange(-5,6)
+        hits = np.any(rows[np.arange(len(rows))[:,None],np.clip(cols,0,len(ys)-1)] != 0, axis=1)
+        observed = np.flatnonzero(hits)
+        groups = np.split(observed, np.flatnonzero(np.diff(observed) > 1)+1)
+        groups = [g for g in groups if len(g) >= 3]
+        gap = any(3 <= b[0]-a[-1]-1 <= 12 for a,b in zip(groups,groups[1:]))
+        return gap, hits.mean()
+    left_dashed, left = dashed(1.)
+    right_dashed, right = dashed(-1.)
+    if left_dashed and not right_dashed and right > .76 and right-left > .10:
+        return 2
+    if right_dashed and not left_dashed and left > .76 and left-right > .10:
+        return 1
+    return None
+
+
 def _sample_paint(mask, gray, image_from_ground, xx, yy):
     ground = np.stack([xx.ravel(), yy.ravel(), np.ones(xx.size)])
     uv = image_from_ground @ ground
@@ -259,7 +287,7 @@ class Vision:
         p = self.config["perception"]["white_threshold"]
         return cv2.inRange(hsv, np.array([0, 0, p["min_value"]]), np.array([179, p["max_saturation"], 255]))
 
-    def lanes(self, frame, pose, course):
+    def lanes(self, frame, pose, course=None, *, previous=None, current_lane=2):
         frame = self.undistort(frame, "front")
         mask = self.mask(frame)
         gray = None if self.session else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -271,15 +299,23 @@ class Vision:
         lookahead = .8
         lane_width = self.config["perception"]["lane_width_m"]
         candidates = _lane_candidates(xs, _paint_tracks(xs, ys, sampled), lane_width)
-        lanes = {}
+        if course is None:
+            identities = [_lane_from_dashes(curve, xs, ys, sampled, lane_width) for curve in candidates]
+            lanes = self.relative_lanes(candidates, pose, previous or {}, current_lane, lane_width, identities)
+            # A previous observation can associate a clipped, distant section
+            # across a bend; the section still needs two currently visible edges.
+            paths = {lane: [(p.x, p.y) for p in path] for lane, path in (previous or {}).items() if lane not in lanes}
+        else:
+            lanes = {}
+            paths = course["lane_paths"]
         sections = {}
-        for lane_id, map_path in course["lane_paths"].items():
-            reference = _local_lane_reference(inverse(map_path, pose), lookahead)
+        for lane_id, path in paths.items():
+            reference = _local_lane_reference(inverse(path, pose), lookahead)
             if reference is None:
                 continue
             x_ref, y_ref = reference
             offsets = [abs(np.interp(x_ref, px, py) - y_ref) for px, py in candidates]
-            if offsets and min(offsets) < .30:
+            if course is not None and offsets and min(offsets) < .30:
                 center = np.column_stack(candidates[np.argmin(offsets)])
             else:
                 if abs(y_ref) < .4 * lane_width:
@@ -306,6 +342,43 @@ class Vision:
                     center = np.vstack((np.column_stack((near_x, near_y)), center))
             lanes[int(lane_id)] = with_headings(transform(center, pose))
         return lanes, mask, frame
+
+    @staticmethod
+    def relative_lanes(candidates, pose, previous, current_lane, width, identities):
+        # Left is positive. In counterclockwise travel lane 1 is left of lane 2.
+        anchors = {}
+        for lane, path in previous.items():
+            local = inverse([(p.x, p.y) for p in path], pose)
+            point = _local_lane_reference(local, .55)
+            if point is not None:
+                anchors[lane] = point[1]
+        if not anchors:
+            anchors[current_lane] = 0.
+        for lane, y in list(anchors.items()):
+            anchors.setdefault(3-lane, y + (width if lane == 2 else -width))
+        chosen = {}
+        for lane, y in anchors.items():
+            matches = []
+            for i, (x, center) in enumerate(candidates):
+                if not (x[0] <= .55 <= x[-1]) or identities[i] not in (None, lane):
+                    continue
+                offset = abs(float(np.interp(.55, x, center))-y)
+                known = identities[i] == lane
+                if offset <= (.95 if known else .48)*width:
+                    matches.append((offset-(.18 if known else 0.), i))
+            matches.sort()
+            if not matches:
+                continue
+            if len(matches) > 1 and matches[1][0]-matches[0][0] < .08:
+                continue
+            score, candidate = matches[0]
+            if candidate not in chosen or score < chosen[candidate][0]:
+                chosen[candidate] = score, lane
+        assigned = {}
+        for index, (_, lane) in chosen.items():
+            x, center = candidates[index]
+            assigned[lane] = with_headings(transform(np.column_stack((x, center)), pose))
+        return assigned
 
     def light(self, frame):
         signal = self.config["perception"]["signal"]

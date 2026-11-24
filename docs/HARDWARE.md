@@ -26,15 +26,14 @@
 
 준비물은 줄자, 테이프, 평평한 체커보드, 수평계, 세워 둘 판이나 상자다. 차량을 평평한 바닥에 세우고 좌우 뒷바퀴의 차축 중심을 바닥에 표시한다. 두 표시의 중점이 **뒤 차축 중앙 `(0, 0)`**이다. 이 점을 지나 차량 정면으로 향하는 중심선을 긋는다. 차량 앞쪽이 `+x`, 운전자 기준 왼쪽이 `+y`이며 위에서 보아 반시계 회전이 양의 `yaw`다. 전후방 영상과 LiDAR에 모두 이 기준을 쓴다.
 
-차량용 Linux 노트북에서 [설치 절차](../README.md#설치와-모터-없는-확인)를 마친 뒤, 저장소 최상위 폴더에서 아래 명령을 실행한다. 이후 같은 터미널에서 `sec`를 사용하면 현장 설정 파일 두 개를 함께 불러온다.
+차량용 Linux 노트북에서 [설치 절차](../README.md#설치와-모터-없는-확인)를 마친 뒤, 저장소 최상위 폴더에서 아래 명령을 실행한다. 이후 같은 터미널에서 `sec`를 사용하면 차량 보정 설정을 불러온다.
 
 ```bash
 source .venv/bin/activate
 cp -n configs/vehicle.example.json configs/local.vehicle.json
-cp -n configs/course.template.json configs/local.course.json
 mkdir -p calibration/local/board/front calibration/local/board/rear
 sec() {
-  python -m second --config configs/local.vehicle.json --course configs/local.course.json "$@"
+  python -m second --config configs/local.vehicle.json "$@"
 }
 sec devices
 ```
@@ -143,40 +142,27 @@ PNG 중앙이 뒤 차축이고 위가 차량 정면, 왼쪽이 차량 왼쪽이�
 
 정면을 맞춘 뒤에도 좌우가 뒤집히면 `angle_sign`, 두 판이 함께 회전해 보이면 `pose[2]`, 같은 방향으로 밀려 보이면 `pose[0]`과 `pose[1]`을 확인한다. 설정값만 수정한 경우 위 Python 부분을 다시 실행하면 같은 녹화로 비교할 수 있다. 지지대를 옮겼거나 스캔 높이를 바꾼 경우에는 실제 기준 차량을 앞, 옆, 뒤에 놓고 새로 녹화한다.
 
-## 5. 최종 배치로 트랙 지도 작성과 검증
+## 5. 모터 없이 현장 인식 확인
 
-트랙에 공통 원점과 정면 방향을 표시한 뒤, 차량을 여러 지점에 세워 **트랙 기준 뒤 차축 중앙과 차의 방향**을 `[x, y, yaw]`(m, m, rad)로 측량한다. 인접 지점에서 같은 벽이나 기둥 일부가 보이게 위치를 잡고, 사람과 이동 가능한 기준 차량은 치운다. 지도 생성 명령은 녹화 파일에 저장된 차량 좌표를 읽으므로 **LiDAR 장착값을 확정한 뒤** 지도용 스캔을 녹화한다.
-
-```bash
-sec record --output data/map_a --seconds 5
-# 두 번째 실측 위치에 차를 세운 뒤 실행
-sec record --output data/map_b --seconds 5
-```
-
-`calibration/local/anchors.json`에 정차 스캔과 해당 위치의 실측 자세를 짝지어 입력한다. 아래는 파일 형식 예시이며 각 `pose`에 현장 측량값을 넣는다.
-
-```json
-[
-  {"scan": "data/map_a/lidar/0000000.npz", "pose": [0.0, 0.0, 0.0]},
-  {"scan": "data/map_b/lidar/0000000.npz", "pose": [1.2, 0.0, 0.0]}
-]
-```
+차량의 최종 장착 상태에서 M3의 2차선에 진행 방향으로 차를 놓고 녹화를 시작한다. 처음에는 잠시 정차해 연속 LiDAR 스캔을 확보한다. 차를 손으로 밀면서 차선, 횡단보도, 랩타이머 양쪽 기둥이 보이는 구간을 통과한다. 트랙 바닥에 원점을 표시하거나 출발 좌표를 입력할 필요는 없다.
 
 ```bash
-sec build-map --anchors calibration/local/anchors.json --output calibration/local/lidar_map.npy
-```
-
-`configs/local.course.json`의 `lidar_map`에 결과 경로를 지정하고 출발 위치, 차선, 정차 구역과 주차 구획도 같은 트랙 좌표계로 채운다. 도로 미션 검증 시에는 M3에서 녹화를 시작해 차를 손으로 다른 실측 지점까지 밀고 잠시 정차한다. 재생 로그에서 `localized`가 참일 때의 `pose`를 정차 지점의 측량값과 비교한다.
-
-```bash
-sec record --output data/verify_m3 --seconds 20
-sec replay-raw --recording data/verify_m3 --mode mission1 --start M3 \
-  --output logs/verify_m3.jsonl --view
+sec record --output data/verify_road --seconds 60
+sec replay-raw --recording data/verify_road --mode mission1 --output logs/verify_road.jsonl --view
 sec doctor --mode mission1
+```
+
+관측 로그의 `pose`는 첫 스캔에 대한 상대 위치와 방향이다. `localized`가 반복해서 거짓이면 LiDAR 높이에서 벽이나 고정 물체가 여러 방향으로 잡히는지 확인한다. 도로에서는 `lanes`에 현재 차선이 잡히는지, 횡단보도에 접근할 때 `stop_zone_distance`가 줄어드는지, 실제 랩타이머 통과 시점에 `gate`가 켜지는지 살핀다. 신호색은 실제 트랙 영상에서 검증한 ROI 또는 학습된 검출기를 사용한다.
+
+주차는 규정의 출발 표시에서 차를 IN에 수직으로 놓고, 두 기준 차량을 실제 배치한 상태에서 별도로 녹화한다. 수직 주차열을 오른쪽, 평행 주차열을 왼쪽에 두고 진행한다.
+
+```bash
+sec record --output data/verify_parking --seconds 60
+sec replay-raw --recording data/verify_parking --mode parking --output logs/verify_parking.jsonl --view
 sec doctor --mode parking
 ```
 
-`doctor`는 필수 설정과 장치 경로를 검사한다. `calibrated`, `surveyed`, `firmware_verified`는 각각 차량 실측과 보정, 트랙 측량, 펌웨어 실차 확인을 마친 뒤에 설정한다. 검차 후 두 미션에서는 같은 장착 상태와 해상도를 유지한다. 카메라 각도를 바꾸면 해당 카메라의 바닥 좌표 보정을, LiDAR 위치나 높이를 바꾸면 장착값 확인과 지도 검증을 다시 한다.
+`scene.parking`에 추첨된 수직 및 평행 주차칸과 OUT 선이 실제로 보인 순서에 맞게 들어오는지 확인한다. `parked_slot`은 해당 위치에서 후방 영상의 도색선까지 확인했을 때 기록된다. `doctor`는 차량 설정과 장치 경로를 점검한다. 실제 장면의 인식과 정지거리는 녹화 및 실차 시험으로 확인한다.
 
 ## 기존 구동 배선
 
@@ -187,4 +173,6 @@ sec doctor --mode parking
 | 조향 DC 모터 | 3, 2 | 기존 극성 유지 |
 | 조향 가변저항 | A2 | ADC 값으로 조향각 피드백 |
 
-중앙 ADC 483과 조향 및 모터 출력 제한은 기존 코드의 초기값이다. v2 펌웨어는 비례 제어, 불감대, 출력 제한을 사용한다. 실제 차량에서 중앙값과 가변저항 오류 범위를 확인하고, 소프트웨어의 조향각(rad)과 펌웨어 명령 사이의 부호는 실측 변환표에 한 번만 반영한다.
+뒤 구동 모터 두 개에는 같은 PWM을 보내며 전진과 후진 모두 출력 상한은 200이다. 주행 상황별 출력은 차량 설정의 `control`에서 조정한다. [구동 PWM 설정](../README.md#구동-pwm-설정)
+
+조향 중앙 ADC 483과 조향 출력 제한은 기존 코드의 초기값이다. v2 펌웨어는 조향에 비례 제어와 불감대를 적용한다. 실제 차량에서 중앙값과 가변저항 오류 범위를 확인하고, 소프트웨어의 조향각(rad)과 펌웨어 명령 사이의 부호는 실측 변환표에 한 번만 반영한다.

@@ -5,14 +5,14 @@ import json
 import logging
 from pathlib import Path
 import sys
-from .config import ROOT, load_json, validate, vehicle_from
+from .config import DRIVE_PWM_KEYS, ROOT, load_json, validate, vehicle_from
 from .mission import Mission
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(description="Second: mission-only two-camera/LiDAR vehicle software")
     p.add_argument("--config", help="vehicle JSON; defaults to the recording's sensor_config.json for raw recordings")
-    p.add_argument("--course", default=str(ROOT/"configs/course.template.json"))
+    p.add_argument("--course", help="optional surveyed course for legacy mapped operation; default uses onboard observations")
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("devices", help="list stable video/serial paths without opening motors")
     d = sub.add_parser("doctor", help="read-only live readiness checks")
@@ -23,7 +23,7 @@ def main(argv=None):
     for name in ("live", "replay", "replay-raw", "compare-icp"):
         q = sub.add_parser(name)
         q.add_argument("--mode", choices=Mission.MODES, default="mission1")
-        q.add_argument("--start", default="M3", help="M3 road; parking 1,2,3,4")
+        q.add_argument("--start", default="M3", help="start ID for --course only (road M3, parking 1 to 4)")
         if name in ("live", "replay"):
             q.add_argument("--perpendicular", choices=("1", "2"), default="1")
             q.add_argument("--parallel", choices=("1", "2"), default="1")
@@ -66,7 +66,7 @@ def main(argv=None):
     c.add_argument("--output", required=True)
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    course = load_json(args.course)
+    course = load_json(args.course) if args.course else None
     recording = None
     if getattr(args, "recording", None):
         from .recording import Recording
@@ -94,20 +94,29 @@ def main(argv=None):
         errors = validate(config, course, args.mode)
         if errors:
             p.error("live blocked:\n"+"\n".join(errors))
-        valid_starts = course["parking"]["starts"] if args.mode == "parking" else course["road_starts"]
-        if args.start not in valid_starts:
-            p.error(f"choose a surveyed start from {list(valid_starts)}")
+        if course is not None:
+            valid_starts = course["parking"]["starts"] if args.mode == "parking" else course["road_starts"]
+            if args.start not in valid_starts:
+                p.error(f"choose a surveyed start from {list(valid_starts)}")
         from .runtime import live
         result = live(config, course, args.mode, args.start, args.perpendicular, args.parallel, args.log)
         print(json.dumps({"state": result.state, "events": result.events, "parking": result.parking_results}, ensure_ascii=False, indent=2))
     elif args.command == "replay":
         from .runtime import observation_from
+        control = config["control"]
+        if "road_speed_mps" in control and not any(key in control for key in DRIVE_PWM_KEYS):
+            defaults = load_json(ROOT/"configs/vehicle.example.json")["control"]
+            for key in (*DRIVE_PWM_KEYS, "curve_steer_deg"):
+                control.setdefault(key, defaults[key])
+            logging.info("Replaying legacy speed configuration with example PWM settings")
         mission = Mission(config, course, args.mode, vehicle_from(config), args.perpendicular, args.parallel)
         count = 0
         with open(args.input, encoding="utf-8") as src, open(args.output, "w", encoding="utf-8") as out:
             for line in src:
                 row = json.loads(line)
                 obs = observation_from(row)
+                if obs.scene is None and course is None:
+                    p.error("this mapped observation log requires its original --course")
                 # Recorded operator start is an explicit event; do not start on idle log frames.
                 start = row.get("start", False) or any(e["code"] == "start_key" and e["time"] <= obs.stamp for e in row.get("events", []))
                 if mission.state == "idle" and start:
@@ -126,6 +135,8 @@ def main(argv=None):
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.command == "compare-icp":
         from .compare_icp import compare, recorded_case, synthetic_case
+        if recording is not None and course is None:
+            p.error("recorded static-map ICP comparison requires --course")
         case = synthetic_case() if args.synthetic else recorded_case(recording, config, course, args.mode, args.start)
         result = compare(*case, config["safety"]["icp_max_rmse_m"], args.repeats)
         result["source"] = "synthetic" if args.synthetic else args.recording

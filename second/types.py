@@ -54,7 +54,7 @@ class Observation:
     lidar_stamp: float
     pose: Pose
     localized: bool
-    speed: float = 0.
+    speed: float = 0.  # signed LiDAR velocity in m/s
     light: Light = Light.UNKNOWN
     light_stamp: float = -math.inf
     lanes: dict[int, list[Waypoint]] = field(default_factory=dict)
@@ -74,11 +74,12 @@ class Observation:
     collision: bool = False
     pose_stamp: float | None = None
     feedback_stamp: float | None = None
+    scene: dict | None = None  # measured geometry in the current run, included in replay
 
 
 @dataclass
 class Command:
-    speed: float = 0.  # signed target m/s (converted by measured lookup)
+    pwm: int = 0  # signed rear motor output, positive for forward
     steer: float = 0.  # road wheel radians; positive = left
     reason: str = "stop"
     state: str = "idle"

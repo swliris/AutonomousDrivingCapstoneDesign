@@ -7,7 +7,7 @@ import time
 import cv2
 import numpy as np
 from .config import MotorMapper, vehicle_from
-from .geometry import contained, footprint, inside, inverse, line_contact, parking_valid, segment_intersects, tire_polygons, transform
+from .geometry import contained, footprint, inside, inverse, external_points, parking_valid, swept_contact, tire_polygons, transform
 from .localization import Localizer
 from .mission import Mission
 from .perception import Vision
@@ -57,28 +57,12 @@ class Actuator:
         self.thread.join(timeout=2.)
 
 
-def swept_contact(current, previous, line):
-    if line_contact(current, line):
-        return True
-    if previous is None:
-        return False
-    a, b = np.asarray(line, float)
-    return any(segment_intersects(c, d, a, b) for old, new in zip(previous, current) for c, d in zip(old, new))
-
-
 def start_pose(course, mode, start_id):
     starts = course["parking"]["starts"] if mode == "parking" else course["road_starts"]
     coords = starts.get(start_id)
     if coords is None or len(coords) != 3:
         raise ValueError(f"missing surveyed start pose for {mode} start {start_id!r}")
     return Pose(*coords)
-
-
-def external_points(points, vehicle):
-    # Sensors and jigs form part of the measured body envelope.
-    inside_body = ((points[:, 0] >= -vehicle.rear-.01) & (points[:, 0] <= vehicle.front+.01)
-                   & (np.abs(points[:, 1]) <= vehicle.width/2+.01))
-    return points[~inside_body]
 
 
 class Observer:
@@ -167,7 +151,7 @@ class Journal:
 
     def write(self, obs, command, mission):
         row = observation_dict(obs)
-        row["command"] = {"speed": command.speed, "steer": command.steer, "reason": command.reason, "state": command.state}
+        row["command"] = {"pwm": command.pwm, "steer": command.steer, "reason": command.reason, "state": command.state}
         row["events"] = mission.events
         self.file.write(json.dumps(row, ensure_ascii=False, allow_nan=False)+"\n")
         self.file.flush()
@@ -185,7 +169,7 @@ def observation_dict(obs):
             "lanes": {str(k): [[p.x, p.y, p.yaw, p.direction] for p in path] for k, path in obs.lanes.items()},
             "obstacles": obs.obstacles.tolist(), "scan_angles": obs.scan_angles.tolist(), "scan_ranges": obs.scan_ranges.tolist(),
             **{k: getattr(obs, k) for k in ("stop_zone_distance", "in_stop_zone", "gate", "parallel_entry", "out_contact", "parked_valid", "parked_slot", "parking_line_contact", "outside", "collision")},
-            "pose_stamp": finite(obs.pose_stamp), "feedback_stamp": finite(obs.feedback_stamp)}
+            "scene": obs.scene, "pose_stamp": finite(obs.pose_stamp), "feedback_stamp": finite(obs.feedback_stamp)}
 
 
 def observation_from(row):
@@ -200,10 +184,16 @@ def observation_from(row):
     return Observation(**r)
 
 
+def make_observer(config, course, mode, start_id):
+    if course is None:
+        from .relative import RelativeObserver
+        return RelativeObserver(config, mode)
+    return Observer(config, course, mode, start_pose(course, mode, start_id))
+
+
 def live(config, course, mode, start_id, perpendicular, parallel, log_dir):
-    initial = start_pose(course, mode, start_id)
     mission = Mission(config, course, mode, vehicle_from(config), perpendicular, parallel)
-    observer = Observer(config, course, mode, initial)
+    observer = make_observer(config, course, mode, start_id)
     hub = SensorHub(config)
     journal = Journal(log_dir)
     actuator = None
@@ -214,7 +204,7 @@ def live(config, course, mode, start_id, perpendicular, parallel, log_dir):
         while True:
             if actuator.error:
                 raise RuntimeError(actuator.error)
-            obs = observer.observe(hub.front.latest(), hub.rear.latest(), hub.lidar.latest(), actuator.driver.feedback)
+            obs = observer.observe(hub.front.latest(), hub.rear.latest(), hub.lidar.latest(), actuator.driver.feedback, now=time.monotonic())
             command = mission.update(obs)
             actuator.submit(command, obs.stamp, mission.state not in ("idle", "done", "failed"))
             if observer.view is not None:

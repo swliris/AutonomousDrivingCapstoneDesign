@@ -109,14 +109,47 @@ def line_contact(polygons, line):
                for poly in polygons)
 
 
+def swept_contact(current, previous, line):
+    if line_contact(current, line):
+        return True
+    if previous is None:
+        return False
+    a, b = np.asarray(line, float)
+    return any(segment_intersects(c, d, a, b) for old, new in zip(previous, current) for c, d in zip(old, new))
+
+
+def external_points(points, vehicle):
+    # Sensors and jigs form part of the measured body envelope.
+    inside_body = ((points[:, 0] >= -vehicle.rear-.01) & (points[:, 0] <= vehicle.front+.01)
+                   & (np.abs(points[:, 1]) <= vehicle.width/2+.01))
+    return points[~inside_body]
+
+
+def footprint_checker(vehicle, allowed):
+    """Prepare repeated point-in-region tests for a fixed vehicle and region."""
+    if isinstance(allowed, dict):
+        return lambda pose: contained(footprint(pose, vehicle, vehicle.margin), allowed)
+    import cv2
+    polygon = np.ascontiguousarray(allowed, dtype=np.float32).reshape(-1, 1, 2)
+    local = rectangle(vehicle.front+vehicle.margin, vehicle.rear+vehicle.margin, vehicle.width+2*vehicle.margin)
+    if not cv2.isContourConvex(polygon):
+        local = polygon_samples(local)
+    # pointPolygonTest runs the edge loop in native code. Concave regions use
+    # the same edge spacing as contained(); convex regions only need corners.
+    def valid(pose):
+        return all(cv2.pointPolygonTest(polygon, (x, y), False) >= 0 for x, y in transform(local, pose))
+    return valid
+
+
 def path_clear(path: list[Waypoint], points, v: Vehicle, allowed=None):
     if not path:
         return False
+    contains_vehicle = footprint_checker(v, allowed) if allowed is not None else None
     for a, b in zip(path, path[1:]+path[-1:]):
         n = max(1, int(math.hypot(b.x-a.x, b.y-a.y)/.025)+1)
         for t in np.linspace(0, 1, n):
             p = Pose(a.x+t*(b.x-a.x), a.y+t*(b.y-a.y), wrap(a.yaw+t*wrap(b.yaw-a.yaw)))
-            if collides(p, points, v) or (allowed is not None and not contained(footprint(p, v, v.margin), allowed)):
+            if collides(p, points, v) or (contains_vehicle is not None and not contains_vehicle(p)):
                 return False
     return True
 

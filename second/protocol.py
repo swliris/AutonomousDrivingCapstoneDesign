@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass
 
 MAGIC = b"\xa5\x5a"
+MAX_DRIVE_PWM = 200
 
 
 def crc16(data: bytes):
@@ -28,7 +29,7 @@ def legacy_packet(value, opcode):
 
 
 def command_frame(seq, pwm, steer_cmd, enabled=True):
-    if not -255 <= pwm <= 255 or not -120 <= steer_cmd <= 120:
+    if not -MAX_DRIVE_PWM <= pwm <= MAX_DRIVE_PWM or not -120 <= steer_cmd <= 120:
         raise ValueError("motor command outside calibrated bounds")
     return frame(1, struct.pack("<HhhB", seq & 65535, pwm, steer_cmd, bool(enabled)))
 
@@ -92,6 +93,8 @@ class SerialDriver:
         if self.protocol == "v2":
             data = command_frame(self.sequence, pwm, int(steer), enabled)
         elif self.protocol == "legacy":
+            if abs(pwm) > MAX_DRIVE_PWM:
+                raise ValueError("drive PWM exceeds the vehicle limit")
             data = legacy_packet(128+int(steer), 2)+legacy_packet(abs(pwm), 0 if pwm >= 0 else 3)
         else:
             raise ValueError("unknown serial protocol")

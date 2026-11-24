@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from .perception import Vision
-from .runtime import Observer, observation_dict, start_pose
+from .runtime import make_observer, observation_dict
 
 
 @contextmanager
@@ -52,7 +52,7 @@ def replay_raw(recording, config, course, mode, start_id, output, view=False):
         camera = config["cameras"][name]
         if any(camera.get(key) is None for key in ("intrinsics", "ground_homography")):
             raise ValueError(f"missing {name} camera calibration: supply a calibrated --config")
-    observer = Observer(config, course, mode, start_pose(course, mode, start_id))
+    observer = make_observer(config, course, mode, start_id)
     first_stamp = recording.events[0][0]
     started = time.monotonic()
     count = 0

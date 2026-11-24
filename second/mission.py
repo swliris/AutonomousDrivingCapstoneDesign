@@ -2,8 +2,10 @@
 import math
 from dataclasses import dataclass
 import numpy as np
+from .config import drive_control_errors
 from .geometry import inverse, path_clear
-from .planning import Tracker, hybrid_astar, lane_change, observed_free
+from .planning import Tracker, hybrid_astar, lane_change, observed_free, turning_paths
+from .protocol import MAX_DRIVE_PWM
 from .types import Command, Light, Pose, wrap
 
 
@@ -29,6 +31,9 @@ class Mission:
     def __init__(self, config, course, mode, vehicle, perpendicular="1", parallel="1"):
         if mode not in self.MODES:
             raise ValueError(mode)
+        errors = drive_control_errors(config["control"])
+        if errors:
+            raise ValueError("\n".join(errors))
         self.config, self.course, self.mode, self.vehicle = config, course, mode, vehicle
         self.selected = {"perpendicular": perpendicular, "parallel": parallel}
         self.state = "idle"
@@ -44,6 +49,7 @@ class Mission:
         self.previous_stamp = None
         self.gate_high = False
         self.first_gate = None
+        self.timer_center = None
         self.last_gate_travel = -math.inf
         self.laps = 0
         self.green_since = None
@@ -56,6 +62,7 @@ class Mission:
         self.hold = ParkingHold()
         self.parking_results = {"perpendicular": False, "parallel": False}
         self.parking_attempts = set()
+        self.searching_aisle = False
         self.entry_high = False
         self.next_plan_at = 0.
         self.previous_command = Command()
@@ -78,8 +85,8 @@ class Mission:
         self.previous_command = Command(reason=reason, state=self.state)
         return self.previous_command
 
-    def finish_command(self, speed=0., steer=0., reason="hold", path=None):
-        self.previous_command = Command(speed, steer, reason, self.state, path or [])
+    def finish_command(self, pwm=0, steer=0., reason="hold", path=None):
+        self.previous_command = Command(pwm, steer, reason, self.state, path or [])
         return self.previous_command
 
     def fail(self, now, reason):
@@ -160,9 +167,22 @@ class Mission:
         if not obs.in_stop_zone and self.travel > 2.:
             self.signal_left_start = True
         # Gate uses foremost sensor/jig edge (runtime computes gate contact).
-        if obs.gate and not self.gate_high and self.travel-self.last_gate_travel >= self.course["minimum_lap_travel_m"]:
+        if obs.scene is not None:
+            # The return pass follows the completed stop/red/green sequence.
+            line = obs.scene.get("timer_line")
+            center = np.mean(line, axis=0) if line is not None else None
+            if self.first_gate is None:
+                gate_eligible = center is not None and not self.signal_done
+            else:
+                gate_eligible = (self.signal_done and center is not None and self.timer_center is not None
+                                 and np.linalg.norm(center-self.timer_center) < 1.2)
+        else:
+            gate_eligible = self.course is not None and self.travel-self.last_gate_travel >= self.course["minimum_lap_travel_m"]
+        if obs.gate and not self.gate_high and gate_eligible:
             if self.first_gate is None:
                 self.first_gate = now
+                if obs.scene is not None:
+                    self.timer_center = center
             else:
                 self.laps += 1
             self.last_gate_travel = self.travel
@@ -202,10 +222,15 @@ class Mission:
             # A first green seen while moving cannot cancel the required red stop.
             self.green_since = self.green_last_stamp = None
             return self.finish_command(reason="stopping in designated signal zone")
-        allowed = self.course["road_polygon"]
-        speed = control["road_speed_mps"]
-        if signal_mode and d is not None and not self.signal_done:
-            speed = min(speed, math.sqrt(2*control["deceleration_mps2"]*max(0., d-.04)))
+        geometry = obs.scene if obs.scene is not None else self.course
+        allowed = geometry.get("road_polygon") if geometry else None
+        if allowed is None:
+            return self.finish_command(reason="road boundaries not observed")
+        if obs.scene is not None and signal_mode and self.red_latched and d is None:
+            return self.finish_command(reason="red light; crosswalk position unknown")
+        # Limit approach output before the LiDAR-based stop point.
+        approaching_stop = signal_mode and d is not None and d <= .30
+        pwm_limit = control["curve_pwm"] if approaching_stop else MAX_DRIVE_PWM
         if self.changing:
             # A stopped/restarted or obstructed manoeuvre is re-evaluated, never a timed steering script.
             remaining = self.tracker.path[self.tracker.index:]
@@ -216,10 +241,18 @@ class Mission:
                 self.lane = self.destination_lane
                 self.changing = False
             else:
-                return self.finish_command(min(speed, control["change_speed_mps"]), steer, "tracking lane change", remaining)
+                return self.finish_command(min(pwm_limit, control["lane_change_pwm"]), steer, "tracking lane change", remaining)
         path = self.near_lane(obs, self.lane)
         if not path:
             return self.finish_command(reason="current lane not observed")
+        if obs.scene is not None:
+            # Leave room inside the observed corridor for the nose at the
+            # last commanded waypoint. Never extend paint into unseen space.
+            forward = inverse([(p.x, p.y) for p in path], obs.pose)[:, 0]
+            end = min(forward[-1], max(inverse(allowed, obs.pose)[:, 0]))-self.vehicle.front-self.vehicle.margin-.03
+            path = [p for p, x in zip(path, forward) if x <= end]
+            if not path or math.hypot(path[-1].x-obs.pose.x, path[-1].y-obs.pose.y) < self.tracker.lookahead:
+                return self.finish_command(reason="insufficient visible lane ahead")
         if not path_clear(path, obs.obstacles, self.vehicle, allowed) or not self.free(path, obs):
             if self.mode != "mission1":
                 return self.finish_command(reason="outer lane blocked; lane change disallowed in timed race")
@@ -237,8 +270,9 @@ class Mission:
             return self.finish_command(reason="no feasible observed lane change")
         self.tracker.set_path(path)
         steer, _, _ = self.tracker.update(obs.pose, obs.speed, now)
-        speed /= 1+1.5*abs(steer)
-        return self.finish_command(speed, steer, "lane following", path)
+        is_curve = abs(steer) >= math.radians(control["curve_steer_deg"])
+        pwm = control["curve_pwm"] if is_curve else control["straight_pwm"]
+        return self.finish_command(min(pwm, pwm_limit), steer, "lane following", path)
 
     def near_lane(self, obs, lane_id):
         # A visible section across the bend may start beyond the tracker. Do
@@ -270,12 +304,22 @@ class Mission:
             if not all(self.parking_results.values()):
                 self.event(now, "parking_incomplete", "OUT touched with incomplete parking stage(s)")
             return self.stop(now, "OUT tire contact")
+        geometry = obs.scene if obs.scene is not None else self.course
+        park = geometry.get("parking") if geometry else None
+        if park is None:
+            return self.finish_command(reason="parking markings unavailable")
         if self.state == "parking_out":
-            goal = Pose(*self.course["parking"]["out_goal"])
+            if not park.get("out_goal"):
+                return self.search_aisle(obs, park)
+            self.finish_search()
+            goal = Pose(*park["out_goal"])
             return self.parking_motion(obs, goal, False, "parking_out", stop_on_goal=True)
         kind = "perpendicular" if self.state.startswith("perpendicular") else "parallel"
         slot_id = self.selected[kind]
-        slot = self.course["parking"][kind][slot_id]
+        slot = park[kind].get(slot_id)
+        if slot is None:
+            return self.search_aisle(obs, park)
+        self.finish_search()
         goal = Pose(*slot["goal"])
         self.parking_attempts.add(kind)
         if self.state.endswith("_hold"):
@@ -305,15 +349,39 @@ class Mission:
             return self.finish_command(reason="target slot reached; start stationary verification")
         return self.parking_motion(obs, goal, True, kind+"_hold")
 
+    def finish_search(self):
+        if self.searching_aisle:
+            self.tracker.set_path([])
+            self.next_plan_at = 0.
+            self.searching_aisle = False
+
+    def search_aisle(self, obs, park):
+        self.searching_aisle = True
+        target = park.get("search")
+        if target is None:
+            return self.finish_command(reason="waiting for visible parking aisle")
+        # Follow the entrance direction while looking for the selected gap or OUT.
+        # After leaving a bay the car can be sideways; use the reversible planner.
+        return self.parking_motion(obs, Pose(*target), False, self.state)
+
     def parking_motion(self, obs, goal, reverse, next_state, stop_on_goal=False):
         now = obs.stamp
-        allowed = self.course["parking"]["area_polygon"]
+        geometry = obs.scene if obs.scene is not None else self.course
+        park = geometry["parking"]
+        allowed = park.get("perpendicular_area", park["area_polygon"]) if self.state.startswith("perpendicular") else park["area_polygon"]
         if not self.tracker.path:
             if now < self.next_plan_at:
                 return self.finish_command(reason="parking replan cooldown")
             self.next_plan_at = now+1.
-            path = hybrid_astar(obs.pose, goal, self.vehicle, obs.obstacles, allowed, final_reverse=reverse,
-                                timeout=self.config["control"]["planner_timeout_s"])
+            path = []
+            if obs.scene is not None:
+                for candidate in turning_paths(obs.pose, goal, self.vehicle, -1 if reverse else 1):
+                    if path_clear(candidate, obs.obstacles, self.vehicle, allowed):
+                        path = candidate
+                        break
+            if not path:
+                path = hybrid_astar(obs.pose, goal, self.vehicle, obs.obstacles, allowed, final_reverse=reverse,
+                                    timeout=self.config["control"]["planner_timeout_s"])
             if not path:
                 return self.finish_command(reason="no collision-free parking path")
             self.tracker.set_path(path)
@@ -335,4 +403,4 @@ class Mission:
                 return self.finish_command(reason="planner goal reached but actual slot containment unverified")
             self.state = next_state
             return self.finish_command(reason="parking segment complete")
-        return self.finish_command(direction*self.config["control"]["parking_speed_mps"], steer, "parking path tracking", remaining)
+        return self.finish_command(direction*self.config["control"]["parking_pwm"], steer, "parking path tracking", remaining)

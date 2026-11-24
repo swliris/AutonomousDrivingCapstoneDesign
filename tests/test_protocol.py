@@ -1,6 +1,8 @@
 import struct
 import pytest
+from second.config import MotorMapper, drive_control_errors
 from second.protocol import Parser, command_frame, crc16, frame, legacy_packet
+from second.types import Command
 
 
 def test_crc_known_reference():
@@ -34,6 +36,20 @@ def test_feedback_matches_firmware_layout():
     assert Parser().feed(frame(2, data)) == [(2, data)]
 
 
-def test_out_of_range_motor_commands_rejected():
+@pytest.mark.parametrize("pwm", [-201, 201])
+def test_out_of_range_motor_commands_rejected(pwm):
     with pytest.raises(ValueError):
-        command_frame(1, 256, 0)
+        command_frame(1, pwm, 0)
+
+
+@pytest.mark.parametrize("requested,expected", [(-240, -200), (-117, -117), (0, 0), (193, 193), (240, 200)])
+def test_drive_pwm_passes_to_wire_with_signed_limit(setup, requested, expected):
+    mapper = MotorMapper(setup[0])
+    pwm, steer = mapper.convert(Command(pwm=requested, steer=.45))
+    assert Parser().feed(command_frame(1, pwm, steer)) == [(1, struct.pack("<HhhB", 1, expected, -100, 1))]
+
+
+@pytest.mark.parametrize("invalid", [-1, 201, 12.5, True])
+def test_invalid_profile_pwm_is_reported(setup, invalid):
+    control = dict(setup[0]["control"], parking_pwm=invalid)
+    assert any("parking_pwm" in issue for issue in drive_control_errors(control))

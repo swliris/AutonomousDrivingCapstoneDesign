@@ -8,6 +8,7 @@
 const uint8_t LEFT_A=6, LEFT_B=7, RIGHT_A=5, RIGHT_B=4;
 const uint8_t STEER_A=3, STEER_B=2, POT=A2;
 const int CENTER=483, LIMIT=67, DEAD_BAND=3;
+const int MAX_DRIVE_PWM=200;
 const uint32_t WATCHDOG_MS=250, CONTROL_MS=10, FEEDBACK_MS=40;
 // Starting values inherited from the working car; verify with wheels raised.
 const float STEER_KP=6.0f;
@@ -63,7 +64,8 @@ void receiveCommands() {
         int pwm=int16_t(read16(rx+6));
         int steer=int16_t(read16(rx+8));
         uint16_t delta=seq-sequence;
-        if ((!haveSequence || (delta>0 && delta<32768)) && abs(pwm)<=255 && abs(steer)<=120 && rx[10]<=1) {
+        if ((!haveSequence || (delta>0 && delta<32768)) && pwm>=-MAX_DRIVE_PWM && pwm<=MAX_DRIVE_PWM
+            && steer>=-120 && steer<=120 && rx[10]<=1) {
           sequence=seq; haveSequence=true;
           targetPWM=pwm; targetSteer=steer; enabled=rx[10]; receivedAt=millis();
           if (!enabled || targetPWM==0) {
@@ -105,7 +107,7 @@ void loop() {
     if (abs(diff)>DEAD_BAND) effort=constrain(int(abs(diff)*STEER_KP),STEER_MIN_PWM,STEER_MAX_PWM)*(diff>0 ? 1:-1);
     motor(STEER_A,STEER_B,effort);
     // Identical commands on rear motors: no differential parking turn.
-    if (actualPWM*targetPWM<0) {
+    if ((actualPWM>0 && targetPWM<0) || (actualPWM<0 && targetPWM>0)) {
       actualPWM=0; directionPauseUntil=now+150;
     }
     if (int32_t(now-directionPauseUntil)>=0) {

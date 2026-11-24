@@ -4,7 +4,7 @@ import itertools
 import math
 import time
 import numpy as np
-from .geometry import collides, contained, footprint, inverse, path_clear, propagate, transform
+from .geometry import collides, footprint_checker, footprint, inverse, path_clear, propagate, transform
 from .types import Pose, Vehicle, Waypoint, wrap
 
 
@@ -60,6 +60,49 @@ def observed_free(path, pose, scan_angles, scan_ranges, lidar_pose, v, max_gap=.
     return True
 
 
+def turning_paths(start, goal, vehicle, direction):
+    """Arc, shared tangent, arc connections for a bicycle travelling in one gear."""
+    radius = vehicle.wheelbase/math.tan(vehicle.max_steer)
+    offset = math.pi if direction < 0 else 0.
+    h0, h1 = start.yaw+offset, goal.yaw+offset
+    def left(heading):
+        return np.array([-math.sin(heading), math.cos(heading)])
+    paths = []
+    for s0 in (-1, 1):
+        for s1 in (-1, 1):
+            c0 = np.array([start.x, start.y])+s0*radius*left(h0)
+            c1 = np.array([goal.x, goal.y])+s1*radius*left(h1)
+            delta = c1-c0
+            distance = np.linalg.norm(delta)
+            if distance < 1e-8:
+                if s0 != s1:
+                    continue
+                tangent, straight = h1, 0.
+            else:
+                sine = (s0-s1)*radius/distance
+                if abs(sine) > 1.+1e-9:
+                    continue
+                tangent = math.atan2(delta[1], delta[0])+math.asin(float(np.clip(sine, -1., 1.)))
+                straight = math.sqrt(max(0., distance**2-((s0-s1)*radius)**2))
+            a0, a1 = (s0*(tangent-h0)) % math.tau, (s1*(h1-tangent)) % math.tau
+            a0 = 0. if math.tau-a0 < 1e-7 else a0
+            a1 = 0. if math.tau-a1 < 1e-7 else a1
+            if max(a0, a1) > math.pi:
+                continue
+            lengths = (a0*radius, straight, a1*radius)
+            paths.append((sum(lengths), lengths, (s0, 0, s1)))
+    for _, lengths, signs in sorted(paths):
+        path = [Waypoint(start.x, start.y, start.yaw, direction)]
+        origin = start
+        for length, sign in zip(lengths, signs):
+            steps = math.ceil(length/.035)
+            for step in range(1, steps+1):
+                point = propagate(origin, direction*length*step/steps, direction*sign*vehicle.max_steer, vehicle.wheelbase)
+                path.append(Waypoint(point.x, point.y, point.yaw, direction))
+            origin = path[-1]
+        yield path
+
+
 def hybrid_astar(start: Pose, goal: Pose, vehicle: Vehicle, obstacles, allowed,
                  final_reverse=False, resolution=.10, step=.12, max_nodes=22000, timeout=2.):
     """Bounded search: no in-place turns or differential steering.
@@ -84,13 +127,15 @@ def hybrid_astar(start: Pose, goal: Pose, vehicle: Vehicle, obstacles, allowed,
             normals = np.column_stack([-edges[:, 1], edges[:, 0]])*sign
             offsets = np.sum(normals*poly, axis=1)
 
+    contains_vehicle = footprint_checker(vehicle, allowed) if normals is None else None
+
     def valid(p):
         if collides(p, obstacles, vehicle):
             return False
-        shape = footprint(p, vehicle, vehicle.margin)
         if normals is not None:
+            shape = footprint(p, vehicle, vehicle.margin)
             return bool(np.all(shape@normals.T-offsets >= -1e-9))
-        return contained(shape, allowed)
+        return contains_vehicle(p)
 
     if not valid(start) or not valid(goal):
         return []

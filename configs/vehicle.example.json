@@ -15,7 +15,6 @@
   },
   "lidar": {"port": "/dev/serial/by-id/REPLACE_LIDAR", "baud": 115200, "angle_sign": -1, "pose": [0.0, 0.0, 0.0], "min_range_m": 0.10, "max_range_m": 8.0},
   "calibration": {
-    "speed_to_pwm": [[-0.40, -170], [-0.20, -130], [0.0, 0], [0.20, 130], [0.40, 170]],
     "steer_to_command": [[-0.45, 100], [0.0, 0], [0.45, -100]],
     "pot_to_steer": [[433, -0.45], [483, 0.0], [533, 0.45]]
   },
@@ -23,11 +22,16 @@
     "segmentation_onnx": null,
     "model_size": [640, 384],
     "lane_width_m": 0.85,
+    "stop_zone_depth_m": 1.50,
     "white_threshold": {"min_value": 160, "max_saturation": 80},
     "signal": {"model": null, "confidence": 0.60, "roi": null, "roi_verified": false}
   },
   "control": {
-    "road_speed_mps": 0.35, "change_speed_mps": 0.22, "parking_speed_mps": 0.18,
+    "straight_pwm": 160,
+    "curve_pwm": 140,
+    "lane_change_pwm": 135,
+    "parking_pwm": 120,
+    "curve_steer_deg": 10,
     "deceleration_mps2": 0.35, "latency_budget_s": 0.15,
     "green_confirm_s": 0.30, "planner_timeout_s": 2.0
   },

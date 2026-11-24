@@ -85,3 +85,28 @@ class Localizer:
             self.speed = ((estimate.x-self.pose.x)*math.cos(estimate.yaw)+(estimate.y-self.pose.y)*math.sin(estimate.yaw))/dt
         self.pose, self.stamp = estimate, stamp
         return estimate, True
+
+
+class ScanOdometry(Localizer):
+    """Estimate displacement from overlapping scans in this run's own frame."""
+    def __init__(self, max_rmse):
+        super().__init__([], Pose(), max_rmse)
+        self.key_pose = None
+
+    def update(self, points, stamp):
+        points = np.asarray(points, float).reshape(-1, 2)
+        if len(points) < 30 or not np.isfinite(points).all():
+            return self.pose, False
+        if self.key_pose is None:
+            if np.linalg.eigvalsh(np.cov(points.T))[0] < .008:
+                return self.pose, False
+            self.reference = points.copy()
+            self.key_pose = self.pose
+            # A second scan must confirm motion before the controller can start.
+            return self.pose, False
+        pose, ok = super().update(points, stamp)
+        if ok and (math.hypot(pose.x-self.key_pose.x, pose.y-self.key_pose.y) > .12
+                   or abs(wrap(pose.yaw-self.key_pose.yaw)) > .12):
+            self.reference = transform(points, pose)
+            self.key_pose = pose
+        return pose, ok
